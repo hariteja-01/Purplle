@@ -15,3 +15,6 @@ testpaths = ["tests"]
 
 [tool.setuptools.packages.find]
 include = ["store_intelligence*"]
+
+[tool.vercel]
+entrypoint = "store_intelligence.api.main:app"
