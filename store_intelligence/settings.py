@@ -27,4 +27,8 @@ class Settings(BaseSettings):
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    return Settings()
+    s = Settings()
+    import os
+    if (os.environ.get("VERCEL") == "1" or os.environ.get("VERCEL_ENV") is not None) and s.database_url == "sqlite:///./store_intelligence.db":
+        s.database_url = "sqlite:////tmp/store_intelligence.db"
+    return s
