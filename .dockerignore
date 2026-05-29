@@ -1,0 +1,12 @@
+__pycache__/
+.pytest_cache/
+.coverage
+.venv/
+dist/
+build/
+.git/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+store_intelligence.db

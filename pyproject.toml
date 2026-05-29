@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "store-intelligence"
+version = "0.1.0"
+description = "Store intelligence pipeline and API for Purplle Tech Challenge 2026 Round 2"
+readme = "README.md"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+addopts = "-q --cov=store_intelligence --cov-report=term-missing"
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["store_intelligence*"]

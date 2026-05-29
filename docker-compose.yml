@@ -1,0 +1,12 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      SI_DATABASE_URL: sqlite:////app/data/store_intelligence.db
+      SI_ENVIRONMENT: docker
+      SI_DATA_DIR: /app/data
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

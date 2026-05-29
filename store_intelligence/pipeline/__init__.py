@@ -1,0 +1,1 @@
+"""Pipeline package for CCTV to event processing."""
