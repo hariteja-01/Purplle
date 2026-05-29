@@ -5,6 +5,10 @@
       "src": "store_intelligence/api/main.py",
       "use": "@vercel/python",
       "config": { "runtime": "python3.12" }
+    },
+    {
+      "src": "public/index.html",
+      "use": "@vercel/static"
     }
   ],
   "routes": [
