@@ -1,7 +1,24 @@
 {
   "version": 2,
-  "cleanUrls": true,
-  "rewrites": [
-    { "source": "/(.*)", "destination": "/public/index.html" }
+  "builds": [
+    {
+      "src": "store_intelligence/api/main.py",
+      "use": "@vercel/python",
+      "config": { "runtime": "python3.12" }
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(stores|stream|events|health)(.*)",
+      "dest": "store_intelligence/api/main.py"
+    },
+    {
+      "src": "/dashboard",
+      "dest": "store_intelligence/api/main.py"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "public/index.html"
+    }
   ]
 }
