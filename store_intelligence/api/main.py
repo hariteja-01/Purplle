@@ -17,16 +17,20 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session
 
-from ..analytics import compute_anomalies, compute_funnel, compute_health, compute_heatmap, compute_metrics
-from ..db import PosTransactionRecord, SessionLocal, ensure_db_initialized, get_db, init_db
-from ..repository import insert_pos_transactions
-from ..schemas import AnomalyResponse, FunnelResponse, HeatmapResponse, IngestResponse, MetricResponse
-from ..services import ingest_events
-from ..settings import get_settings
+from store_intelligence.analytics import compute_anomalies, compute_funnel, compute_health, compute_heatmap, compute_metrics
+from store_intelligence.db import PosTransactionRecord, SessionLocal, ensure_db_initialized, get_db, init_db
+from store_intelligence.repository import insert_pos_transactions
+from store_intelligence.schemas import AnomalyResponse, FunnelResponse, HeatmapResponse, IngestResponse, MetricResponse
+from store_intelligence.services import ingest_events
+from store_intelligence.settings import get_settings
 
 logger = logging.getLogger("store_intelligence")
 
-templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+templates_dir = Path(__file__).parent / "templates"
+if not templates_dir.exists():
+    templates_dir = Path("/tmp")
+
+templates = Jinja2Templates(directory=str(templates_dir))
 
 
 # Initialize database (create tables if they don't exist) at module load time.
