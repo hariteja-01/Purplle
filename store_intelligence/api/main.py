@@ -29,9 +29,14 @@ logger = logging.getLogger("store_intelligence")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
 
+# Initialize database (create tables if they don't exist) at module load time.
+# This ensures SQLite tables exist in serverless environments (like Vercel)
+# where ASGI lifespan event might not be triggered.
+init_db()
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    init_db()
     _load_pos_transactions_if_configured()
     yield
 
@@ -223,9 +228,13 @@ async def stream_metrics(store_id: str):
 
     async def event_stream():
         while True:
-            with SessionLocal() as db:
-                metrics = compute_metrics(db, store_id).model_dump(mode="json")
-            yield f"event: metrics\ndata: {json.dumps(metrics)}\n\n"
+            try:
+                with SessionLocal() as db:
+                    metrics = compute_metrics(db, store_id).model_dump(mode="json")
+                yield f"event: metrics\ndata: {json.dumps(metrics)}\n\n"
+            except Exception as exc:
+                logger.error(json.dumps({"event": "stream_metrics_error", "store_id": store_id, "error": str(exc)}))
+                yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"
             await asyncio.sleep(max(0.25, settings.dashboard_refresh_ms / 1000.0))
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
