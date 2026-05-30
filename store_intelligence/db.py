@@ -56,7 +56,21 @@ def init_db() -> None:
     Base.metadata.create_all(bind=engine)
 
 
+_db_initialized = False
+
+def ensure_db_initialized() -> None:
+    global _db_initialized
+    if not _db_initialized:
+        try:
+            init_db()
+            _db_initialized = True
+        except Exception as e:
+            import logging
+            logging.getLogger("store_intelligence").warning(f"Database initialization failed: {e}")
+
+
 def get_db() -> Iterator[Session]:
+    ensure_db_initialized()
     session = SessionLocal()
     try:
         yield session

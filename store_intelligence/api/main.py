@@ -18,7 +18,7 @@ from sqlalchemy.exc import DBAPIError, OperationalError
 from sqlalchemy.orm import Session
 
 from ..analytics import compute_anomalies, compute_funnel, compute_health, compute_heatmap, compute_metrics
-from ..db import PosTransactionRecord, SessionLocal, get_db, init_db
+from ..db import PosTransactionRecord, SessionLocal, ensure_db_initialized, get_db, init_db
 from ..repository import insert_pos_transactions
 from ..schemas import AnomalyResponse, FunnelResponse, HeatmapResponse, IngestResponse, MetricResponse
 from ..services import ingest_events
@@ -32,7 +32,10 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 # Initialize database (create tables if they don't exist) at module load time.
 # This ensures SQLite tables exist in serverless environments (like Vercel)
 # where ASGI lifespan event might not be triggered.
-init_db()
+try:
+    init_db()
+except Exception as e:
+    logger.warning(json.dumps({"event": "db_init_import_failed", "error": str(e)}))
 
 
 @asynccontextmanager
@@ -238,6 +241,7 @@ async def stream_metrics(store_id: str):
     settings = get_settings()
 
     async def event_stream():
+        ensure_db_initialized()
         while True:
             try:
                 with SessionLocal() as db:
