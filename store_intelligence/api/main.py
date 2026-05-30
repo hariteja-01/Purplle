@@ -117,9 +117,20 @@ async def request_logging_middleware(request: Request, call_next):
     try:
         response = await call_next(request)
         status_code = response.status_code
-    except Exception:
+    except Exception as exc:
         status_code = 500
-        raise
+        import traceback
+        tb = traceback.format_exc()
+        logger.error(json.dumps({"event": "request_failed", "trace_id": trace_id, "error": str(exc), "traceback": tb}))
+        response = JSONResponse(
+            status_code=500,
+            content={
+                "error": "internal_server_error",
+                "detail": str(exc),
+                "traceback": tb.splitlines(),
+                "trace_id": trace_id,
+            }
+        )
     finally:
         latency_ms = round((time.perf_counter() - start) * 1000, 2)
         store_id = request.path_params.get("store_id") or request.path_params.get("id")
