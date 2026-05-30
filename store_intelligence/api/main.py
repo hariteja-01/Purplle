@@ -1,259 +1,264 @@
 from __future__ import annotations
 
-import asyncio
-import csv
-import json
 import logging
-import time
-import uuid
-from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
-
-from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
-from fastapi.templating import Jinja2Templates
-from sqlalchemy.exc import DBAPIError, OperationalError
-from sqlalchemy.orm import Session
-
-from store_intelligence.analytics import compute_anomalies, compute_funnel, compute_health, compute_heatmap, compute_metrics
-from store_intelligence.db import PosTransactionRecord, SessionLocal, ensure_db_initialized, get_db, init_db
-from store_intelligence.repository import insert_pos_transactions
-from store_intelligence.schemas import AnomalyResponse, FunnelResponse, HeatmapResponse, IngestResponse, MetricResponse
-from store_intelligence.services import ingest_events
-from store_intelligence.settings import get_settings
+import json
 
 logger = logging.getLogger("store_intelligence")
 
-templates_dir = Path(__file__).parent / "templates"
-if not templates_dir.exists():
-    templates_dir = Path("/tmp")
-
-templates = Jinja2Templates(directory=str(templates_dir))
-
-
-# Initialize database (create tables if they don't exist) at module load time.
-# This ensures SQLite tables exist in serverless environments (like Vercel)
-# where ASGI lifespan event might not be triggered.
 try:
-    init_db()
-except Exception as e:
-    logger.warning(json.dumps({"event": "db_init_import_failed", "error": str(e)}))
+    import asyncio
+    import csv
+    import time
+    import uuid
+    from contextlib import asynccontextmanager
+    from datetime import datetime, timezone
+    from pathlib import Path
+    from typing import Any
 
+    from fastapi import Depends, FastAPI, HTTPException, Request
+    from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+    from fastapi.templating import Jinja2Templates
+    from sqlalchemy.exc import DBAPIError, OperationalError
+    from sqlalchemy.orm import Session
 
-@asynccontextmanager
-async def lifespan(_app: FastAPI):
-    _load_pos_transactions_if_configured()
-    yield
+    from store_intelligence.analytics import compute_anomalies, compute_funnel, compute_health, compute_heatmap, compute_metrics
+    from store_intelligence.db import PosTransactionRecord, SessionLocal, ensure_db_initialized, get_db, init_db
+    from store_intelligence.repository import insert_pos_transactions
+    from store_intelligence.schemas import AnomalyResponse, FunnelResponse, HeatmapResponse, IngestResponse, MetricResponse
+    from store_intelligence.services import ingest_events
+    from store_intelligence.settings import get_settings
 
+    templates_dir = Path(__file__).parent / "templates"
+    if not templates_dir.exists():
+        templates_dir = Path("/tmp")
 
-from fastapi.middleware.cors import CORSMiddleware
+    templates = Jinja2Templates(directory=str(templates_dir))
 
-app = FastAPI(title="Store Intelligence API", version="1.0", lifespan=lifespan)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
-def _load_pos_transactions_if_configured() -> None:
-    settings = get_settings()
-
-    candidates: list[Path] = []
-    if settings.pos_csv_path is not None:
-        candidates.append(settings.pos_csv_path)
-    # Common dataset mount path in docker-compose
-    candidates.append(settings.data_dir / "pos_transactions.csv")
-
-    csv_path = next((path for path in candidates if path.exists()), None)
-    if csv_path is None:
-        return
-
+    # Initialize database (create tables if they don't exist) at module load time.
+    # This ensures SQLite tables exist in serverless environments (like Vercel)
+    # where ASGI lifespan event might not be triggered.
     try:
-        rows = []
-        with csv_path.open("r", encoding="utf-8") as handle:
-            reader = csv.DictReader(handle)
-            for raw in reader:
-                try:
-                    timestamp = datetime.fromisoformat(str(raw["timestamp"]).replace("Z", "+00:00")).astimezone(timezone.utc)
-                    rows.append(
-                        PosTransactionRecord(
-                            store_id=str(raw["store_id"]),
-                            transaction_id=str(raw["transaction_id"]),
-                            timestamp=timestamp,
-                            basket_value_inr=float(raw["basket_value_inr"]),
-                        )
-                    )
-                except Exception:
-                    continue
-        if not rows:
+        init_db()
+    except Exception as e:
+        logger.warning(json.dumps({"event": "db_init_import_failed", "error": str(e)}))
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        _load_pos_transactions_if_configured()
+        yield
+
+    from fastapi.middleware.cors import CORSMiddleware
+
+    app = FastAPI(title="Store Intelligence API", version="1.0", lifespan=lifespan)
+
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    def _load_pos_transactions_if_configured() -> None:
+        settings = get_settings()
+
+        candidates: list[Path] = []
+        if settings.pos_csv_path is not None:
+            candidates.append(settings.pos_csv_path)
+        # Common dataset mount path in docker-compose
+        candidates.append(settings.data_dir / "pos_transactions.csv")
+
+        csv_path = next((path for path in candidates if path.exists()), None)
+        if csv_path is None:
             return
-        # Use a short-lived session (startup is sync)
-        from ..db import SessionLocal
 
-        with SessionLocal() as session:
-            insert_pos_transactions(session, rows)
-            logger.info(json.dumps({"event": "pos_ingested", "path": str(csv_path), "rows": len(rows)}))
-    except Exception as exc:  # pragma: no cover
-        logger.warning(json.dumps({"event": "pos_ingest_failed", "path": str(csv_path), "error": str(exc)}))
-
-
-@app.middleware("http")
-async def request_logging_middleware(request: Request, call_next):
-    trace_id = request.headers.get("x-trace-id") or str(uuid.uuid4())
-    request.state.trace_id = trace_id
-
-    event_count: int | None = None
-    if request.url.path == "/events/ingest" and request.method.upper() == "POST":
-        body = await request.body()
-        request.state.raw_body = body
         try:
-            payload = json.loads(body.decode("utf-8")) if body else []
-            if isinstance(payload, list):
-                event_count = len(payload)
-        except Exception:
-            event_count = None
+            rows = []
+            with csv_path.open("r", encoding="utf-8") as handle:
+                reader = csv.DictReader(handle)
+                for raw in reader:
+                    try:
+                        timestamp = datetime.fromisoformat(str(raw["timestamp"]).replace("Z", "+00:00")).astimezone(timezone.utc)
+                        rows.append(
+                            PosTransactionRecord(
+                                store_id=str(raw["store_id"]),
+                                transaction_id=str(raw["transaction_id"]),
+                                timestamp=timestamp,
+                                basket_value_inr=float(raw["basket_value_inr"]),
+                            )
+                        )
+                    except Exception:
+                        continue
+            if not rows:
+                return
+            # Use a short-lived session (startup is sync)
+            from store_intelligence.db import SessionLocal
 
-    start = time.perf_counter()
-    status_code: int | None = None
-    try:
-        response = await call_next(request)
-        status_code = response.status_code
-    except Exception as exc:
-        status_code = 500
-        import traceback
-        tb = traceback.format_exc()
-        logger.error(json.dumps({"event": "request_failed", "trace_id": trace_id, "error": str(exc), "traceback": tb}))
-        response = JSONResponse(
-            status_code=500,
-            content={
-                "error": "internal_server_error",
-                "detail": str(exc),
-                "traceback": tb.splitlines(),
-                "trace_id": trace_id,
-            }
-        )
-    finally:
-        latency_ms = round((time.perf_counter() - start) * 1000, 2)
-        store_id = request.path_params.get("store_id") or request.path_params.get("id")
-        logger.info(
-            json.dumps(
-                {
+            with SessionLocal() as session:
+                insert_pos_transactions(session, rows)
+                logger.info(json.dumps({"event": "pos_ingested", "path": str(csv_path), "rows": len(rows)}))
+        except Exception as exc:  # pragma: no cover
+            logger.warning(json.dumps({"event": "pos_ingest_failed", "path": str(csv_path), "error": str(exc)}))
+
+    @app.middleware("http")
+    async def request_logging_middleware(request: Request, call_next):
+        trace_id = request.headers.get("x-trace-id") or str(uuid.uuid4())
+        request.state.trace_id = trace_id
+
+        event_count: int | None = None
+        if request.url.path == "/events/ingest" and request.method.upper() == "POST":
+            body = await request.body()
+            request.state.raw_body = body
+            try:
+                payload = json.loads(body.decode("utf-8")) if body else []
+                if isinstance(payload, list):
+                    event_count = len(payload)
+            except Exception:
+                event_count = None
+
+        start = time.perf_counter()
+        status_code: int | None = None
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+        except Exception as exc:
+            status_code = 500
+            import traceback
+            tb = traceback.format_exc()
+            logger.error(json.dumps({"event": "request_failed", "trace_id": trace_id, "error": str(exc), "traceback": tb}))
+            response = JSONResponse(
+                status_code=500,
+                content={
+                    "error": "internal_server_error",
+                    "detail": str(exc),
+                    "traceback": tb.splitlines(),
                     "trace_id": trace_id,
-                    "store_id": store_id,
-                    "endpoint": request.url.path,
-                    "method": request.method,
-                    "latency_ms": latency_ms,
-                    "event_count": event_count,
-                    "status_code": status_code,
                 }
             )
+        finally:
+            latency_ms = round((time.perf_counter() - start) * 1000, 2)
+            store_id = request.path_params.get("store_id") or request.path_params.get("id")
+            logger.info(
+                json.dumps(
+                    {
+                        "trace_id": trace_id,
+                        "store_id": store_id,
+                        "endpoint": request.url.path,
+                        "method": request.method,
+                        "latency_ms": latency_ms,
+                        "event_count": event_count,
+                        "status_code": status_code,
+                    }
+                )
+            )
+
+        response.headers["x-trace-id"] = trace_id
+        return response
+
+    @app.exception_handler(OperationalError)
+    async def operational_error_handler(request: Request, exc: OperationalError):
+        trace_id = getattr(request.state, "trace_id", None)
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "db_unavailable",
+                "detail": "Database unavailable. Retry.",
+                "trace_id": trace_id,
+            },
         )
 
-    response.headers["x-trace-id"] = trace_id
-    return response
+    @app.exception_handler(DBAPIError)
+    async def dbapi_error_handler(request: Request, exc: DBAPIError):
+        trace_id = getattr(request.state, "trace_id", None)
+        return JSONResponse(
+            status_code=503,
+            content={
+                "error": "db_unavailable",
+                "detail": "Database unavailable. Retry.",
+                "trace_id": trace_id,
+            },
+        )
 
+    @app.post("/events/ingest", response_model=IngestResponse)
+    async def ingest(request: Request, db: Session = Depends(get_db)):
+        # Prefer the middleware-captured body to avoid double JSON parsing and to keep request logging consistent.
+        try:
+            raw = getattr(request.state, "raw_body", None)
+            payload: Any = json.loads(raw.decode("utf-8")) if raw else await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail="invalid JSON body") from exc
 
-@app.exception_handler(OperationalError)
-async def operational_error_handler(request: Request, exc: OperationalError):
-    trace_id = getattr(request.state, "trace_id", None)
-    return JSONResponse(
-        status_code=503,
-        content={
-            "error": "db_unavailable",
-            "detail": "Database unavailable. Retry.",
-            "trace_id": trace_id,
-        },
-    )
+        if not isinstance(payload, list):
+            raise HTTPException(status_code=422, detail="payload must be a list of events")
+        if len(payload) > 500:
+            raise HTTPException(status_code=413, detail="batch limit exceeded (max 500 events)")
 
+        return ingest_events(db, payload)
 
-@app.exception_handler(DBAPIError)
-async def dbapi_error_handler(request: Request, exc: DBAPIError):
-    trace_id = getattr(request.state, "trace_id", None)
-    return JSONResponse(
-        status_code=503,
-        content={
-            "error": "db_unavailable",
-            "detail": "Database unavailable. Retry.",
-            "trace_id": trace_id,
-        },
-    )
+    @app.get("/stores/{store_id}/metrics", response_model=MetricResponse)
+    def metrics(store_id: str, db: Session = Depends(get_db)):
+        return compute_metrics(db, store_id)
 
+    @app.get("/stores/{store_id}/funnel", response_model=FunnelResponse)
+    def funnel(store_id: str, db: Session = Depends(get_db)):
+        return compute_funnel(db, store_id)
 
-@app.post("/events/ingest", response_model=IngestResponse)
-async def ingest(request: Request, db: Session = Depends(get_db)):
-    # Prefer the middleware-captured body to avoid double JSON parsing and to keep request logging consistent.
-    try:
-        raw = getattr(request.state, "raw_body", None)
-        payload: Any = json.loads(raw.decode("utf-8")) if raw else await request.json()
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail="invalid JSON body") from exc
+    @app.get("/stores/{store_id}/heatmap", response_model=HeatmapResponse)
+    def heatmap(store_id: str, db: Session = Depends(get_db)):
+        return compute_heatmap(db, store_id)
 
-    if not isinstance(payload, list):
-        raise HTTPException(status_code=422, detail="payload must be a list of events")
-    if len(payload) > 500:
-        raise HTTPException(status_code=413, detail="batch limit exceeded (max 500 events)")
+    @app.get("/stores/{store_id}/anomalies", response_model=AnomalyResponse)
+    def anomalies(store_id: str, db: Session = Depends(get_db)):
+        return compute_anomalies(db, store_id)
 
-    return ingest_events(db, payload)
+    @app.get("/health")
+    def health(db: Session = Depends(get_db)):
+        return compute_health(db)
 
+    @app.get("/dashboard", response_class=HTMLResponse)
+    def dashboard(request: Request, store_id: str = "STORE_BLR_002"):
+        settings = get_settings()
+        return templates.TemplateResponse(
+            request,
+            "dashboard.html",
+            {
+                "store_id": store_id,
+                "refresh_ms": settings.dashboard_refresh_ms,
+            },
+        )
 
-@app.get("/stores/{store_id}/metrics", response_model=MetricResponse)
-def metrics(store_id: str, db: Session = Depends(get_db)):
-    return compute_metrics(db, store_id)
+    @app.get("/stream/stores/{store_id}/metrics")
+    async def stream_metrics(store_id: str):
+        settings = get_settings()
 
+        async def event_stream():
+            ensure_db_initialized()
+            while True:
+                try:
+                    with SessionLocal() as db:
+                        metrics = compute_metrics(db, store_id).model_dump(mode="json")
+                    yield f"event: metrics\ndata: {json.dumps(metrics)}\n\n"
+                except Exception as exc:
+                    logger.error(json.dumps({"event": "stream_metrics_error", "store_id": store_id, "error": str(exc)}))
+                    yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"
+                await asyncio.sleep(max(0.25, settings.dashboard_refresh_ms / 1000.0))
 
-@app.get("/stores/{store_id}/funnel", response_model=FunnelResponse)
-def funnel(store_id: str, db: Session = Depends(get_db)):
-    return compute_funnel(db, store_id)
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
 
+except Exception as import_exc:
+    import traceback
+    import_tb = traceback.format_exc()
+    logger.error(f"Import failure in main.py: {import_tb}")
 
-@app.get("/stores/{store_id}/heatmap", response_model=HeatmapResponse)
-def heatmap(store_id: str, db: Session = Depends(get_db)):
-    return compute_heatmap(db, store_id)
+    app = FastAPI(title="Store Intelligence API - Fallback Debug", version="1.0")
 
-
-@app.get("/stores/{store_id}/anomalies", response_model=AnomalyResponse)
-def anomalies(store_id: str, db: Session = Depends(get_db)):
-    return compute_anomalies(db, store_id)
-
-
-@app.get("/health")
-def health(db: Session = Depends(get_db)):
-    return compute_health(db)
-
-
-@app.get("/dashboard", response_class=HTMLResponse)
-def dashboard(request: Request, store_id: str = "STORE_BLR_002"):
-    settings = get_settings()
-    return templates.TemplateResponse(
-        request,
-        "dashboard.html",
-        {
-            "store_id": store_id,
-            "refresh_ms": settings.dashboard_refresh_ms,
-        },
-    )
-
-
-@app.get("/stream/stores/{store_id}/metrics")
-async def stream_metrics(store_id: str):
-    settings = get_settings()
-
-    async def event_stream():
-        ensure_db_initialized()
-        while True:
-            try:
-                with SessionLocal() as db:
-                    metrics = compute_metrics(db, store_id).model_dump(mode="json")
-                yield f"event: metrics\ndata: {json.dumps(metrics)}\n\n"
-            except Exception as exc:
-                logger.error(json.dumps({"event": "stream_metrics_error", "store_id": store_id, "error": str(exc)}))
-                yield f"event: error\ndata: {json.dumps({'error': str(exc)})}\n\n"
-            await asyncio.sleep(max(0.25, settings.dashboard_refresh_ms / 1000.0))
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+    @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
+    async def fallback_route(path: str):
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "import_failed",
+                "detail": str(import_exc),
+                "traceback": import_tb.splitlines(),
+            }
+        )
