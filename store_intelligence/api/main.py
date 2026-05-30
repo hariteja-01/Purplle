@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 import json
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 
 logger = logging.getLogger("store_intelligence")
 
@@ -15,8 +17,8 @@ try:
     from pathlib import Path
     from typing import Any
 
-    from fastapi import Depends, FastAPI, HTTPException, Request
-    from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+    from fastapi import Depends, HTTPException, Request
+    from fastapi.responses import HTMLResponse, StreamingResponse
     from fastapi.templating import Jinja2Templates
     from sqlalchemy.exc import DBAPIError, OperationalError
     from sqlalchemy.orm import Session
