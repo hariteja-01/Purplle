@@ -8,8 +8,9 @@ import { StoreEvent, Session, Store } from './types';
 
 // --- Singleton database connection ---
 let _db: Database.Database | null = null;
-const DB_PATH = process.env.DATABASE_URL?.replace('file:', '') ||
-  path.join(process.cwd(), 'data', 'store-intelligence.db');
+const DB_PATH = process.env.VERCEL 
+  ? path.join('/tmp', 'store-intelligence.db')
+  : (process.env.DATABASE_URL?.replace('file:', '') || path.join(process.cwd(), 'data', 'store-intelligence.db'));
 
 // Track server uptime
 const SERVER_START_TIME = Date.now();
