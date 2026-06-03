@@ -4,7 +4,13 @@
     {
       "src": "store_intelligence/api/main.py",
       "use": "@vercel/python",
-      "config": { "runtime": "python3.12" }
+      "config": {
+        "runtime": "python3.12",
+        "includeFiles": [
+          "store_intelligence/**/*.py",
+          "store_intelligence/api/templates/**"
+        ]
+      }
     },
     {
       "src": "public/index.html",

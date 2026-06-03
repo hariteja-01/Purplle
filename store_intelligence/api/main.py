@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Add the project root to sys.path to ensure absolute imports resolve correctly in Vercel serverless environment
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.resolve()))
+
 import logging
 import json
 from fastapi import FastAPI
